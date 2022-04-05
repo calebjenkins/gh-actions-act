@@ -1,4 +1,4 @@
-name: uses-and-run-in-one-step
+name: step-uses-and-run
 on: push
 
 jobs:

@@ -1,219 +1,173 @@
 package model
 
 import (
-	"strings"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func TestReadWorkflow_StringEvent(t *testing.T) {
-	yaml := `
-name: local-action-docker-url
-on: push
+var (
+	workdir = "../testdata"
+)
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: ./actions/docker-url
-`
-
-	workflow, err := ReadWorkflow(strings.NewReader(yaml))
-	assert.NoError(t, err, "read workflow should succeed")
-
-	assert.Len(t, workflow.On(), 1)
-	assert.Contains(t, workflow.On(), "push")
+func init() {
+	if wd, err := filepath.Abs(workdir); err == nil {
+		workdir = wd
+	}
 }
 
-func TestReadWorkflow_ListEvent(t *testing.T) {
-	yaml := `
-name: local-action-docker-url
-on: [push, pull_request]
+func readWorkflow(t *testing.T, name string) (w *Workflow) {
+	f, err := os.OpenFile(filepath.Join(workdir, name), os.O_RDONLY, 0)
+	if err != nil {
+		assert.NoError(t, err, "file open should succeed")
+	}
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: ./actions/docker-url
-`
+	w, err = ReadWorkflow(f)
+	if err != nil {
+		assert.NoError(t, err, "read workflow should succeed")
+	}
 
-	workflow, err := ReadWorkflow(strings.NewReader(yaml))
-	assert.NoError(t, err, "read workflow should succeed")
-
-	assert.Len(t, workflow.On(), 2)
-	assert.Contains(t, workflow.On(), "push")
-	assert.Contains(t, workflow.On(), "pull_request")
+	return w
 }
 
-func TestReadWorkflow_MapEvent(t *testing.T) {
-	yaml := `
-name: local-action-docker-url
-on:
-  push:
-    branches:
-    - master
-  pull_request:
-    branches:
-    - master
+func TestReadWorkflow_Event(t *testing.T) {
+	t.Run("on-string", func(t *testing.T) {
+		w := readWorkflow(t, "event/string.yml")
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: ./actions/docker-url
-`
+		assert.Len(t, w.On(), 1)
+		assert.Contains(t, w.On(), "push")
+	})
 
-	workflow, err := ReadWorkflow(strings.NewReader(yaml))
-	assert.NoError(t, err, "read workflow should succeed")
-	assert.Len(t, workflow.On(), 2)
-	assert.Contains(t, workflow.On(), "push")
-	assert.Contains(t, workflow.On(), "pull_request")
-}
+	t.Run("on-list", func(t *testing.T) {
+		w := readWorkflow(t, "event/list.yml")
 
-func TestReadWorkflow_StringContainer(t *testing.T) {
-	yaml := `
-name: local-action-docker-url
+		assert.Len(t, w.On(), 3)
+		assert.Contains(t, w.On(), "push")
+		assert.Contains(t, w.On(), "pull_request")
+		assert.Contains(t, w.On(), "workflow_dispatch")
+	})
 
-jobs:
-  test:
-    container: nginx:latest
-    runs-on: ubuntu-latest
-    steps:
-    - uses: ./actions/docker-url
-  test2:
-    container:
-      image: nginx:latest
-      env:
-        foo: bar
-    runs-on: ubuntu-latest
-    steps:
-    - uses: ./actions/docker-url
-`
+	t.Run("on-map", func(t *testing.T) {
+		w := readWorkflow(t, "event/map.yml")
 
-	workflow, err := ReadWorkflow(strings.NewReader(yaml))
-	assert.NoError(t, err, "read workflow should succeed")
-	assert.Len(t, workflow.Jobs, 2)
-	assert.Contains(t, workflow.Jobs["test"].Container().Image, "nginx:latest")
-	assert.Contains(t, workflow.Jobs["test2"].Container().Image, "nginx:latest")
-	assert.Contains(t, workflow.Jobs["test2"].Container().Env["foo"], "bar")
+		assert.Len(t, w.On(), 2)
+		assert.Contains(t, w.On(), "push")
+		assert.Contains(t, w.On(), "pull_request")
+	})
 }
 
 func TestReadWorkflow_ObjectContainer(t *testing.T) {
-	yaml := `
-name: local-action-docker-url
+	t.Run("fake", func(t *testing.T) {
+		w := readWorkflow(t, "job-container/fake.yml")
 
-jobs:
-  test:
-    container:
-      image: r.example.org/something:latest
-      credentials:
-        username: registry-username
-        password: registry-password
-      env:
-        HOME: /home/user
-      volumes:
-        - my_docker_volume:/volume_mount
-        - /data/my_data
-        - /source/directory:/destination/directory
-    runs-on: ubuntu-latest
-    steps:
-    - uses: ./actions/docker-url
-`
+		assert.Len(t, w.Jobs, 1)
 
-	workflow, err := ReadWorkflow(strings.NewReader(yaml))
-	assert.NoError(t, err, "read workflow should succeed")
-	assert.Len(t, workflow.Jobs, 1)
+		c := w.GetJob("test").Container()
 
-	container := workflow.GetJob("test").Container()
+		assert.Contains(t, c.Image, "r.example.org/something:latest")
+		assert.Contains(t, c.Env["HOME"], "/home/user")
+		assert.Contains(t, c.Credentials["username"], "registry-username")
+		assert.Contains(t, c.Credentials["password"], "registry-password")
+		assert.ElementsMatch(t, c.Volumes, []string{
+			"my_docker_volume:/volume_mount",
+			"/data/my_data",
+			"/source/directory:/destination/directory",
+		})
+	})
 
-	assert.Contains(t, container.Image, "r.example.org/something:latest")
-	assert.Contains(t, container.Env["HOME"], "/home/user")
-	assert.Contains(t, container.Credentials["username"], "registry-username")
-	assert.Contains(t, container.Credentials["password"], "registry-password")
-	assert.ElementsMatch(t, container.Volumes, []string{
-		"my_docker_volume:/volume_mount",
-		"/data/my_data",
-		"/source/directory:/destination/directory",
+	t.Run("real", func(t *testing.T) {
+		w := readWorkflow(t, "job-container/push.yml")
+
+		assert.Len(t, w.Jobs, 4)
+		assert.Contains(t, w.Jobs["test"].Container().Image, "node:16-buster-slim")
+		assert.Contains(t, w.Jobs["test"].Container().Env["TEST_ENV"], "test-value")
+
+		assert.Contains(t, w.Jobs["test2"].Container().Image, "node:16-buster-slim")
+		assert.Contains(t, w.Jobs["test2"].Steps[0].Environment()["TEST_ENV"], "test-value")
 	})
 }
 
 func TestReadWorkflow_StepsTypes(t *testing.T) {
-	yaml := `
-name: invalid step definition
+	w := readWorkflow(t, "matrix/push.yml")
+	assert.Equal(t, StepTypeRun, w.Jobs["test"].Steps[0].Type())
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: test1
-        uses: actions/checkout@v2
-        run: echo
-      - name: test2
-        run: echo
-      - name: test3
-        uses: actions/checkout@v2
-      - name: test4
-        uses: docker://nginx:latest
-      - name: test5
-        uses: ./local-action
-`
+	w = readWorkflow(t, "step-uses-and-run/push.yml")
+	assert.Equal(t, StepTypeInvalid, w.Jobs["test"].Steps[0].Type())
 
-	workflow, err := ReadWorkflow(strings.NewReader(yaml))
-	assert.NoError(t, err, "read workflow should succeed")
-	assert.Len(t, workflow.Jobs, 1)
-	assert.Len(t, workflow.Jobs["test"].Steps, 5)
-	assert.Equal(t, workflow.Jobs["test"].Steps[0].Type(), StepTypeInvalid)
-	assert.Equal(t, workflow.Jobs["test"].Steps[1].Type(), StepTypeRun)
-	assert.Equal(t, workflow.Jobs["test"].Steps[2].Type(), StepTypeUsesActionRemote)
-	assert.Equal(t, workflow.Jobs["test"].Steps[3].Type(), StepTypeUsesDockerURL)
-	assert.Equal(t, workflow.Jobs["test"].Steps[4].Type(), StepTypeUsesActionLocal)
+	w = readWorkflow(t, "remote-action-docker/push.yml")
+	assert.Equal(t, StepTypeUsesActionRemote, w.Jobs["test"].Steps[0].Type())
+
+	w = readWorkflow(t, "remote-action-js/push.yml")
+	assert.Equal(t, StepTypeUsesActionRemote, w.Jobs["test"].Steps[0].Type())
+
+	w = readWorkflow(t, "uses-docker-url/push.yml")
+	assert.Equal(t, StepTypeUsesDockerURL, w.Jobs["test"].Steps[0].Type())
+
+	w = readWorkflow(t, "step-local-action-docker-url/push.yml")
+	assert.Equal(t, StepTypeUsesActionLocal, w.Jobs["test"].Steps[1].Type())
+
+	w = readWorkflow(t, "step-local-action-dockerfile/push.yml")
+	assert.Equal(t, StepTypeUsesActionLocal, w.Jobs["test"].Steps[1].Type())
+
+	w = readWorkflow(t, "step-local-action-js/push.yml")
+	assert.Equal(t, StepTypeUsesActionLocal, w.Jobs["test-node16"].Steps[1].Type())
+
+	w = readWorkflow(t, "step-local-action-via-composite-dockerfile/push.yml")
+	assert.Equal(t, StepTypeUsesActionLocal, w.Jobs["test"].Steps[1].Type())
 }
 
 // See: https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#jobsjob_idoutputs
 func TestReadWorkflow_JobOutputs(t *testing.T) {
-	yaml := `
-name: job outputs definition
+	//	yaml := `
+	//name: job outputs definition
+	//
+	//jobs:
+	//  test1:
+	//    runs-on: ubuntu-latest
+	//    steps:
+	//      - id: test1_1
+	//        run: |
+	//          echo "::set-output name=a_key::some-a_value"
+	//          echo "::set-output name=b-key::some-b-value"
+	//    outputs:
+	//      some_a_key: ${{ steps.test1_1.outputs.a_key }}
+	//      some-b-key: ${{ steps.test1_1.outputs.b-key }}
+	//
+	//  test2:
+	//    runs-on: ubuntu-latest
+	//    needs:
+	//      - test1
+	//    steps:
+	//      - name: test2_1
+	//        run: |
+	//          echo "${{ needs.test1.outputs.some_a_key }}"
+	//          echo "${{ needs.test1.outputs.some-b-key }}"
+	//`
 
-jobs:
-  test1:
-    runs-on: ubuntu-latest
-    steps:
-      - id: test1_1
-        run: |
-          echo "::set-output name=a_key::some-a_value"
-          echo "::set-output name=b-key::some-b-value"
-    outputs:
-      some_a_key: ${{ steps.test1_1.outputs.a_key }}
-      some-b-key: ${{ steps.test1_1.outputs.b-key }}
+	w := readWorkflow(t, "outputs/push.yml")
 
-  test2:
-    runs-on: ubuntu-latest
-    needs:
-      - test1
-    steps:
-      - name: test2_1
-        run: |
-          echo "${{ needs.test1.outputs.some_a_key }}"
-          echo "${{ needs.test1.outputs.some-b-key }}"
-`
+	assert.Len(t, w.Jobs, 2)
 
-	workflow, err := ReadWorkflow(strings.NewReader(yaml))
-	assert.NoError(t, err, "read workflow should succeed")
-	assert.Len(t, workflow.Jobs, 2)
+	j := w.Jobs["build_output"]
+	assert.Len(t, j.Steps, 3)
+	assert.Equal(t, StepTypeRun, j.Steps[0].Type())
+	assert.Equal(t, "set_1", j.Steps[0].ID)
+	assert.Equal(t, "set_2", j.Steps[1].ID)
+	assert.Equal(t, "set_3", j.Steps[2].ID)
 
-	assert.Len(t, workflow.Jobs["test1"].Steps, 1)
-	assert.Equal(t, StepTypeRun, workflow.Jobs["test1"].Steps[0].Type())
-	assert.Equal(t, "test1_1", workflow.Jobs["test1"].Steps[0].ID)
-	assert.Len(t, workflow.Jobs["test1"].Outputs, 2)
-	assert.Contains(t, workflow.Jobs["test1"].Outputs, "some_a_key")
-	assert.Contains(t, workflow.Jobs["test1"].Outputs, "some-b-key")
-	assert.Equal(t, "${{ steps.test1_1.outputs.a_key }}", workflow.Jobs["test1"].Outputs["some_a_key"])
-	assert.Equal(t, "${{ steps.test1_1.outputs.b-key }}", workflow.Jobs["test1"].Outputs["some-b-key"])
+	assert.Len(t, j.Outputs, 4)
+	assert.Equal(t, map[string]string{
+		"variable_1": "${{ steps.set_1.outputs.var_1 }}",
+		"variable_2": "${{ steps.set_1.outputs.var_2 }}",
+		"variable_3": "${{ steps.set_2.outputs.var_3 }}",
+		"variable_4": "${{ steps.set_3.outputs.var_4 }}",
+	}, j.Outputs)
 }
 
 func TestReadWorkflow_Strategy(t *testing.T) {
-	w, err := NewWorkflowPlanner("testdata/strategy/push.yml", true)
+	w, err := NewWorkflowPlanner(filepath.Join(workdir, "strategy/push.yml"), true)
 	assert.NoError(t, err)
 
 	p := w.PlanJob("strategy-only-max-parallel")

@@ -3,7 +3,9 @@ package runner
 import (
 	"context"
 	"fmt"
+	"github.com/nektos/act/pkg/artifacts"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -20,7 +22,7 @@ var (
 	baseImage = "node:16-buster-slim"
 	platforms map[string]string
 	logLevel  = log.DebugLevel
-	workdir   = "testdata"
+	workdir   = "../testdata"
 )
 
 func init() {
@@ -44,7 +46,7 @@ func init() {
 }
 
 func TestGraphEvent(t *testing.T) {
-	planner, err := model.NewWorkflowPlanner("testdata/basic", true)
+	planner, err := model.NewWorkflowPlanner(filepath.Join(workdir, "basic"), true)
 	assert.Nil(t, err)
 
 	plan := planner.PlanEvent("push")
@@ -87,6 +89,8 @@ func (j *TestJobFileInfo) runTest(ctx context.Context, t *testing.T, cfg *Config
 		Secrets:               cfg.Secrets,
 		GitHubInstance:        "github.com",
 		ContainerArchitecture: cfg.ContainerArchitecture,
+		ArtifactServerPath:    cfg.ArtifactServerPath,
+		ArtifactServerPort:    cfg.ArtifactServerPort,
 	}
 
 	runner, err := New(runnerConfig)
@@ -129,10 +133,10 @@ func TestRunEvent(t *testing.T) {
 		{workdir, "shells/sh", "push", "", platforms},
 
 		// Local action
-		{workdir, "local-action-docker-url", "push", "", platforms},
-		{workdir, "local-action-dockerfile", "push", "", platforms},
-		{workdir, "local-action-via-composite-dockerfile", "push", "", platforms},
-		{workdir, "local-action-js", "push", "", platforms},
+		{workdir, "step-local-action-docker-url", "push", "", platforms},
+		{workdir, "step-local-action-dockerfile", "push", "", platforms},
+		{workdir, "step-local-action-via-composite-dockerfile", "push", "", platforms},
+		{workdir, "step-local-action-js", "push", "", platforms},
 
 		// Uses
 		{workdir, "uses-composite", "push", "", platforms},
@@ -154,7 +158,7 @@ func TestRunEvent(t *testing.T) {
 		{workdir, "checkout", "push", "", platforms},
 		{workdir, "job-container", "push", "", platforms},
 		{workdir, "job-container-non-root", "push", "", platforms},
-		{workdir, "container-hostname", "push", "", platforms},
+		{workdir, "container", "push", "", platforms},
 		{workdir, "remote-action-docker", "push", "", platforms},
 		{workdir, "remote-action-js", "push", "", platforms},
 		{workdir, "matrix", "push", "", platforms},
@@ -173,9 +177,7 @@ func TestRunEvent(t *testing.T) {
 		{workdir, "steps-context/outcome", "push", "", platforms},
 		{workdir, "job-status-check", "push", "job 'fail' failed", platforms},
 		{workdir, "if-expressions", "push", "Job 'mytest' failed", platforms},
-		{"../model/testdata", "strategy", "push", "", platforms}, // TODO: move all testdata into pkg so we can validate it with planner and runner
-		// {"testdata", "issue-228", "push", "", platforms, }, // TODO [igni]: Remove this once everything passes
-		{"../model/testdata", "container-volumes", "push", "", platforms},
+		{workdir, "strategy", "push", "", platforms}, // TODO: move all testdata into pkg so we can validate it with planner and runner
 	}
 
 	for _, table := range tables {
@@ -192,7 +194,6 @@ func TestRunDifferentArchitecture(t *testing.T) {
 		workdir:      workdir,
 		workflowPath: "basic",
 		eventName:    "push",
-		errorMessage: "",
 		platforms:    platforms,
 	}
 
@@ -209,7 +210,6 @@ func TestRunEventSecrets(t *testing.T) {
 		workdir:      workdir,
 		workflowPath: workflowPath,
 		eventName:    "push",
-		errorMessage: "",
 		platforms:    platforms,
 	}
 
@@ -232,11 +232,33 @@ func TestRunEventPullRequest(t *testing.T) {
 		workdir:      workdir,
 		workflowPath: workflowPath,
 		eventName:    "pull_request",
-		errorMessage: "",
 		platforms:    platforms,
 	}
 
 	tjfi.runTest(context.Background(), t, &Config{EventPath: filepath.Join(workdir, workflowPath, "event.json")})
+}
+
+func TestArtifactFlow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	ctx := context.Background()
+
+	artifactsPath := path.Join(os.TempDir(), "test-artifacts")
+	artifactsPort := "12345"
+
+	defer artifacts.Serve(ctx, artifactsPath, artifactsPort)()
+	defer os.RemoveAll(artifactsPath)
+
+	tjfi := TestJobFileInfo{
+		workdir:      workdir,
+		workflowPath: "upload-and-download",
+		eventName:    "push",
+		platforms:    platforms,
+	}
+
+	tjfi.runTest(ctx, t, &Config{ArtifactServerPath: artifactsPath, ArtifactServerPort: artifactsPort})
 }
 
 func TestContainerPath(t *testing.T) {

@@ -1,5 +1,5 @@
-name: local-action-dockerfile
 on: push
+
 defaults:
   run:
     shell: bash
